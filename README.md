@@ -184,7 +184,12 @@ point group is `opm.agents.toolbox`.
 ```
 
 `transport: "stdio"` is accepted but not implemented yet - see status
-table.
+table. `scaffold_path` should point outside the repo directory (a
+generated scaffold file contains real device/entity names from
+whatever MCP server it was pointed at) - `.gitignore` also excludes
+`policy_scaffold.json` and `*.scaffold.json` as a second safety net.
+See `examples/policy_scaffold.example.json` for the file's shape with
+fake data.
 
 ## Confirmation policy
 
