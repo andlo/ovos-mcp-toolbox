@@ -64,11 +64,25 @@ that's a fine outcome.
       validated `ToolOutput`
 - [ ] Confirmation gate for tools with side-effects
 - [ ] Graceful degradation when a configured server is unreachable
-- [ ] Tested against a live MCP server (ha-mcp) — **not done, this is the
-      next step**
+- [ ] Tested against a live MCP server (ha-mcp) — **blocked, see below**
 - [ ] Tested against a second MCP server simultaneously — **not done**
 - [ ] Packaged/published — **not done, do not `pip install` from PyPI,
       it isn't there**
+
+**Blocked on infrastructure, not on this repo's code** — see
+[TESTING_LOG.md](TESTING_LOG.md) for full details:
+
+1. The entire `ToolBox`/`AgentTool` interface this project depends on
+   only exists in **alpha** builds of `ovos-plugin-manager`
+   (`>=2.2.1a2`; latest stable is `2.2.0`). Even `ovos-agentic-loop`'s
+   PyPI-stable `0.1.0` release requires an alpha `ovos-plugin-manager`.
+   Nothing stable to build against yet.
+2. Home Assistant's MCP Server integration doesn't answer on any
+   standard path on the available test instance (192.168.65.186) —
+   unclear yet whether it's installed/enabled at all.
+3. No LLM backend (Ollama or otherwise) is running anywhere on the test
+   network yet, so there's nothing to wire up as the loop's `brain`
+   even once the above are sorted.
 
 ## Verified interface (for reference while building)
 
