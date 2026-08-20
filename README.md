@@ -1,18 +1,17 @@
 # ovos-mcp-toolbox
 
-> ⚠️ **WORK IN PROGRESS — NOT PUBLISHED, NOT SAFE FOR SIDE-EFFECT TOOLS.**
-> As of 2026-08-20, the **full chain works end-to-end**: a real LLM (via a
-> public demo Ollama) reasons about a question, chooses the right tool
-> through `MCPToolBox`, calls real Home Assistant over MCP, and returns a
-> correct natural-language answer from live data — see
-> [TESTING_LOG.md](TESTING_LOG.md) for the transcript and the two real bugs
-> (one in `ovos-agentic-loop`, one a silent-strip config gotcha in
-> `ovos-openai-plugin`) found and worked around to get there. There is
-> still **no confirmation gate**: every discovered tool, including
-> side-effect ones like `HassTurnOn` (which can unlock doors), is callable
-> immediately, and this has only been tested with a single read-only,
-> no-argument tool. Do not point this at anything with real side-effects
-> in an unsupervised loop yet.
+> ⚠️ **WORK IN PROGRESS — NOT PUBLISHED, NOT SAFE FOR REAL SIDE-EFFECT TOOLS.**
+> As of 2026-08-20, the **full chain works end-to-end, including side-effect
+> tools**: a real LLM (via a public demo Ollama) reasons about a question,
+> correctly disambiguates between two similarly-named entities, calls
+> `HassTurnOn`/`HassTurnOff` through `MCPToolBox` against real Home
+> Assistant, and the resulting state change was independently verified —
+> see [TESTING_LOG.md](TESTING_LOG.md). Testing used two harmless virtual
+> `input_boolean` helpers created specifically so a wrong tool choice would
+> have zero real consequence. There is still **no confirmation gate**: the
+> same mechanism pointed at a real lock or appliance would execute
+> immediately, with no confirmation step. Building that gate is the next
+> priority, not further capability testing.
 
 ## The idea
 
@@ -76,7 +75,10 @@ that's a fine outcome.
       path (input validation → execution → output validation), not just
       the bare HTTP call.
 - [ ] Confirmation gate for tools with side-effects — **not implemented,
-      the main safety gap right now**
+      the main safety gap right now. Side-effect tools (HassTurnOn/Off)
+      have now been proven to work correctly (2026-08-20, against safe
+      virtual test helpers) - the risk is real, not hypothetical, the
+      moment this points at anything that matters.**
 - [x] Graceful degradation when a configured server is unreachable —
       implemented (`LOG.warning` + skip), not yet tested against an
       actually-offline server (only tested against one that was always up)
@@ -90,6 +92,12 @@ that's a fine outcome.
       question → tool choice → MCP call → live HA data → natural-language
       answer, verified correct against wall-clock time. Two real bugs
       found and worked around along the way — see TESTING_LOG.md.
+- [x] Side-effect tools (`HassTurnOn`/`HassTurnOff`) — **DONE 2026-08-20**,
+      tested against two safe virtual `input_boolean` helpers created for
+      this purpose. LLM correctly disambiguated between two
+      similarly-named entities across two separate requests; both
+      resulting state changes verified independently against HA's own
+      `/api/states`, not just the tool's own reported success.
 - [ ] Packaged/published — **not done, do not `pip install` from PyPI,
       it isn't there**
 

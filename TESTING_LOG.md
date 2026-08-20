@@ -227,3 +227,96 @@ for the production instance is still open, unaffected by this test.
   format less reliably; not tested.
 - Multi-tool reasoning (a question requiring 2+ sequential tool calls)
   not tested — only single-tool-call happy path so far.
+
+
+## Side-effect tools tested for the first time (2026-08-20, continued)
+
+Created two safe virtual `input_boolean` helpers on the live HA test
+instance specifically for this: `input_boolean.mcp_test_lamp` and
+`input_boolean.mcp_test_fan` (via the HA UI - no REST/API path exists
+for helper creation, see below). Neither controls anything real.
+
+### Helper creation - no working programmatic path found
+
+Tried three ways to create helpers via API before falling back to the
+UI:
+1. `PUT /api/config/input_boolean/config/<id>` (legacy editable-YAML
+   REST endpoint) → `404 Not Found`. Appears removed in this HA version.
+2. `POST /api/config/config_entries/flow` with
+   `{"handler": "input_boolean", ...}` → `404 {"message":"Invalid
+   handler specified"}`. Modern HA creates helpers via a WebSocket-only
+   flow, not this REST endpoint.
+3. A Claude-side `ha-mcp` connector tool (`ha_config_set_helper`)
+   exists and could do this - but turned out to be pointed at a
+   **different** HA instance, not this test instance. Confirmed by
+   comparing `/api/config` on both: same `location_name` ("Hjem") and
+   `time_zone`, but **different HA core version** (test instance
+   `2026.8.1` vs the other instance `2026.8.2`) - different versions
+   queried moments apart rules out same-instance. Did not use that
+   connector here to avoid touching the wrong installation.
+
+**Conclusion**: helper creation on this HA version requires either the
+UI or the WebSocket API - no simple REST path exists. Andreas created
+both helpers manually via Settings → Devices & Services → Helpers.
+
+### Exposure to Assist also has no REST path
+
+`POST /api/services/homeassistant/expose_entity` → `400 Bad Request`.
+Checked `/api/services` - no `expose_entity` service is registered at
+all. Voice-assistant exposure is a WebSocket-only command
+(`homeassistant/expose_entity`), not a callable service. Andreas set
+this manually via Settings → Voice assistants → Expose.
+
+Once exposed, `ha_getlivecontext` with `domain: "input_boolean"` found
+both correctly. Note: filtering by `name: "MCP Test"` (partial/multi-word)
+returned "No exposed entities matched" even though both entities exist
+and are exposed - the `name` filter's matching behaviour is stricter or
+different than expected; `domain` filtering is more reliable for
+verification purposes.
+
+### Test 1: direct tool call, state verified independently
+
+```
+Before: GET /api/states/input_boolean.mcp_test_lamp -> "off"
+tb.call_tool("ha_hassturnon", {"name": "MCP Test Lamp"})
+  -> {"speech": {}, "response_type": "action_done",
+      "data": {"success": [{"name": "MCP Test Lamp", "type": "entity",
+                             "id": "input_boolean.mcp_test_lamp"}],
+                "failed": []}}
+After:  GET /api/states/input_boolean.mcp_test_lamp -> "on"
+```
+State change verified via a separate, direct `/api/states` GET call -
+not just trusting the tool's own "success" response.
+
+### Test 2: full natural-language loop, picking correctly between two similarly-named entities
+
+```
+$ python examples/live_ha_demo.py "Turn off the MCP Test Lamp"
+The MCP Test Lamp is now turned off.
+
+$ python examples/live_ha_demo.py "Turn on the MCP Test Fan"
+The fan is now activated.
+```
+Independently verified via `/api/states`:
+- `input_boolean.mcp_test_lamp` -> `off` (correct)
+- `input_boolean.mcp_test_fan` -> `on` (correct)
+
+This is the first test where the LLM had to disambiguate between two
+targets with near-identical names ("MCP Test Lamp" vs "MCP Test Fan")
+and pick the one actually named in the request - it did so correctly
+both times, with no confusion between the two.
+
+### What this milestone does and doesn't prove
+
+Proves: `MCPToolBox` correctly passes through side-effect tool calls,
+`ReActLoopEngine` + the demo LLM correctly disambiguate between similar
+entities, and the whole chain reliably produces the intended real-world
+state change.
+
+Does NOT prove: safety. There is still no confirmation gate. This test
+used harmless virtual helpers specifically so that a wrong tool choice
+or a hallucinated entity name would have zero real consequence. The
+same mechanism, pointed at `HassTurnOn` for a real lock or real
+appliance, would execute immediately and without confirmation. Building
+the confirmation gate is the next real priority, not further
+capability testing.
