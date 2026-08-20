@@ -320,3 +320,102 @@ same mechanism, pointed at `HassTurnOn` for a real lock or real
 appliance, would execute immediately and without confirmation. Building
 the confirmation gate is the next real priority, not further
 capability testing.
+
+
+## Confirmation policy: designed, built, corrected mid-build, verified (2026-08-20)
+
+### First design (abandoned): OVOS skill settings
+
+First approach: a companion OVOSSkill owning `settingsmeta.json`
+(dynamically generated, one section per configured MCP server name, so
+the settings UI groups fields under a recognisable name rather than a
+flat wall of checkboxes) writing to
+`<xdg_config_home>/skills/<skill_id>/settings.json`, with `MCPToolBox`
+reading that same file directly via `json_database.JsonStorage`.
+
+Built and working in isolation:
+- `ovos_workshop.skills.OVOSSkill.settings_path` confirmed as
+  `<xdg_config_home>/skills/<skill_id>/settings.json`, backed by
+  `json_database.JsonStorage` (a plain `dict` subclass with
+  `.reload()`/`.store()`).
+- Verified the confirmation gate live against HA with this design:
+  `HassTurnOn` correctly refused, `GetDateTime` correctly allowed
+  (per a hand-written `settings.json`), state confirmed unchanged
+  after the refused call.
+- **Found a real upstream bug while building the settingsmeta
+  generator**: `ovos_workshop.settings.settings2meta()` uses separate
+  `if isinstance(v, bool): ...` / `if isinstance(v, int): ...`
+  statements rather than `elif` - and `bool` is an `int` subclass in
+  Python, so a boolean setting gets emitted as a field TWICE (once
+  correctly as `"checkbox"`, once wrongly as `"number"` with value
+  `"True"`, capitalised, invalid for a number field). Confirmed by
+  running `settings2meta` directly, not by reading its source. Worked
+  around by building settingsmeta fields by hand instead of calling
+  that helper - a regression test for this is kept in
+  `test_settingsmeta.py`'s history even though that file is gone now
+  (see below), because the same trap would resurface if
+  `settings2meta` is ever reached for again.
+
+**Abandoned after Andreas asked directly: "hvis persona kører sin egen
+server og OVOS kører på en anden, hvor ligger mcp toolboxen?"** The
+whole design silently assumed `MCPToolBox` and the settings skill run
+on the same host, sharing a filesystem - true when persona runs inside
+`ovos-core` itself (skill manager and toolbox in one process), false
+the moment persona runs as a standalone `ovos-persona-server` on a
+different machine. `MCPToolBox` would read a `settings.json` on its
+own host that no skill anywhere is writing to. A real architectural
+gap, not caught until asked about directly - the fix required admitting
+the whole skill-settings direction was wrong, not patching around it.
+
+### Second design (current): plain toolbox config
+
+Replaced with: policy lives directly in `MCPToolBox`'s own `config`
+dict, under a `"policy"` key - the exact same persona-JSON config every
+other `ovos-agentic-loop` toolbox already uses for its own flags
+(`ShellToolBox`'s `allow_shell`, `FileSystemToolBox`'s `allow_write`).
+No new infrastructure, no OVOS-skill dependency at all (dropped
+`ovos-workshop` and `json-database` from requirements.txt), works
+identically regardless of where the toolbox process actually runs.
+
+Immediately raised a second real question from Andreas: **how does a
+user know what to write in `never_confirm`/`always_confirm` without
+first seeing what tool names a server exposes?** Solved two ways:
+
+1. `policy_scaffold.py` - a standalone CLI, usable before a server is
+   even added to persona.json, that connects, lists tools, and prints
+   a ready-to-paste policy block.
+2. `MCPToolBox._write_policy_scaffold()` - opt-in (`"scaffold_path"`
+   config key, `None`/absent by default, never guesses a directory)
+   auto-updates the same kind of reference file every time
+   `discover_tools()` succeeds for a server. Merges per-server rather
+   than overwriting the whole file, verified with a dedicated test
+   (`test_scaffold_merges_does_not_clobber_other_servers`) so a
+   temporarily-offline server doesn't lose its last-known entry.
+
+### Live re-verification after the redesign
+
+Same test as before the redesign, confirming the swap from
+file-based to config-based policy didn't change observable behaviour:
+
+```
+policy = {"ha__default_confirm": True, "ha__never_confirm": "GetDateTime,GetLiveContext"}
+
+GetDateTime  -> is_error: False   (correctly allowed)
+HassTurnOn   -> is_error: True    (correctly refused)
+  "Refused: 'HassTurnOn' on server 'ha' requires confirmation, and no
+   confirmation mechanism is implemented yet. ..."
+```
+
+Also verified `scaffold_path` end-to-end against the live HA instance:
+`discover_tools()` with `scaffold_path` set produced a
+`policy_scaffold.json` listing all 10 real tools with descriptions and
+a ready-to-paste policy block - not just tested against a mock.
+
+### Net effect
+
+Two real design corrections in one session, both caught by Andreas
+asking a direct question rather than by anything in testing catching
+it - worth remembering: "does this work" and "does this work for every
+topology this is supposed to support" are different questions, and
+this project's own test suite (all run on one machine, one process)
+couldn't have caught the skill-settings mistake on its own.

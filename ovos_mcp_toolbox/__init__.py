@@ -15,7 +15,9 @@ ReActLoopEngine (only tested by calling discover_tools()/tool_call
 directly in a script, not through the full loop).
 """
 import itertools
+import json
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, Union
 
 import requests
@@ -24,6 +26,8 @@ from ovos_plugin_manager.templates.agent_tools import (
     AgentTool, ToolArguments, ToolOutput, ToolBox
 )
 from ovos_utils.log import LOG
+
+from .policy import MCPExposurePolicy
 
 # Confirmed by hand against a live HA MCP endpoint (see TESTING_LOG.md):
 # Accept must list both, or HA returns 400 "Client must accept application/json"
@@ -40,17 +44,13 @@ class MCPServerConfig:
 
     def __init__(self, name: str, transport: str = "http",
                  url: Optional[str] = None, command: Optional[str] = None,
-                 args: Optional[List[str]] = None, token: Optional[str] = None,
-                 confirm: bool = False):
+                 args: Optional[List[str]] = None, token: Optional[str] = None):
         self.name = name
         self.transport = transport
         self.url = url
         self.command = command
         self.args = args or []
         self.token = token
-        # If True, every tool from this server goes through the (not yet
-        # implemented) confirmation gate rather than running directly.
-        self.confirm = confirm
 
 
 class MCPHTTPClient:
@@ -206,12 +206,33 @@ class MCPToolBox(ToolBox):
 
     Bridges N configured MCP servers into ovos-agentic-loop's ToolBox
     interface. HTTP transport is implemented and hand-verified against
-    a live Home Assistant MCP endpoint (TESTING_LOG.md). NOT yet run
-    inside an actual ReActLoopEngine - only discover_tools()/call_tool()
-    called directly. No confirmation gate yet: every discovered tool,
-    including ones with side effects like HassTurnOn, is callable
-    immediately. Do not point this at anything you wouldn't want an
-    LLM operating unsupervised, until that gate exists.
+    a live Home Assistant MCP endpoint (TESTING_LOG.md), including
+    side-effect tools (HassTurnOn/Off) with a real LLM through the full
+    ReActLoopEngine loop.
+
+    Confirmation gate (policy.py): a per-server, per-tool-name policy
+    (never based on any server-specific concept like HA's "domains" -
+    the only thing every MCP server gives us is a flat tool name list)
+    decides whether a call needs confirmation. Policy lives directly in
+    this toolbox's OWN config, under the "policy" key - see policy.py's
+    docstring for why (short version: an earlier design shared a file
+    with a companion OVOSSkill, which only works if the persona runs
+    inside ovos-core itself and breaks for a standalone
+    ovos-persona-server on another host - dropped for that reason).
+
+    A user can't write a sensible policy without first seeing what tool
+    names a server exposes - see policy_scaffold.py for a standalone
+    CLI, and "scaffold_path" below for this toolbox writing the same
+    kind of reference automatically as a side effect of normal use.
+
+    IMPORTANT: there is no pause-and-ask mechanism yet - ReActLoopEngine
+    is a synchronous, blocking call with no built-in way to pause
+    mid-loop for a human answer (see README "Confirmation gate" status
+    for the open design question). Until that exists, any call the
+    policy flags as needing confirmation is REFUSED outright, not
+    silently executed and not silently allowed - a clear error comes
+    back to the LLM/loop instead of a real-world action. This is a
+    deliberate fail-closed choice, not a stand-in implementation.
     """
     toolbox_id = "ovos-mcp-tools"
 
@@ -224,6 +245,11 @@ class MCPToolBox(ToolBox):
         self._clients: Dict[str, MCPHTTPClient] = {
             s.name: MCPHTTPClient(s) for s in self.servers if s.transport == "http"
         }
+        self._policy = MCPExposurePolicy(self.config.get("policy", {}))
+        # None (default) = scaffold-writing disabled. Set explicitly in
+        # persona.json's toolbox config to opt in - never guess a
+        # directory on the user's behalf. See _write_policy_scaffold.
+        self._scaffold_path = self.config.get("scaffold_path")
         super().__init__(toolbox_id=self.toolbox_id, config=config, bus=bus)
 
 
@@ -261,6 +287,9 @@ class MCPToolBox(ToolBox):
                 LOG.warning(f"{self.toolbox_id}: server '{server.name}' unreachable: {e}")
                 continue
 
+            if self._scaffold_path:
+                self._write_policy_scaffold(server.name, remote_tools)
+
             for tool_def in remote_tools:
                 remote_name = tool_def["name"]
                 prefixed_name = f"{server.name}:{remote_name}"
@@ -274,11 +303,72 @@ class MCPToolBox(ToolBox):
                 ))
         return agent_tools
 
+    def _write_policy_scaffold(self, server_name: str, tools: List[Dict[str, Any]]) -> None:
+        """
+        Auto-updates a reference file at self._scaffold_path (opt-in via
+        the "scaffold_path" config key - disabled unless explicitly
+        set, see __init__) so the user can see what tool names actually
+        exist on a server and copy them straight into persona.json's
+        "policy" block, instead of guessing.
+
+        Merges rather than overwrites the whole file, so a server that
+        fails to connect on a later run doesn't lose its previously
+        written entry (only the successfully-queried server's own
+        section is replaced each call). Never touches persona.json
+        itself - this is a separate, disposable reference file this
+        toolbox fully owns.
+
+        Best-effort: any failure here is logged, never raised - this is
+        a convenience file, not something that should break tool
+        discovery if e.g. the configured directory isn't writable.
+        """
+        try:
+            path = Path(self._scaffold_path)
+            existing: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text())
+                except Exception:
+                    existing = {}  # corrupt/foreign file - start fresh rather than crash
+
+            existing[server_name] = {
+                "tools": [
+                    {"name": t["name"], "description": (t.get("description") or "")[:200]}
+                    for t in tools
+                ],
+                "paste_into_persona_json_policy": {
+                    f"{server_name}__default_confirm": True,
+                    f"{server_name}__always_confirm": "",
+                    f"{server_name}__never_confirm": "",
+                },
+            }
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(existing, indent=2) + "\n")
+        except Exception as e:
+            LOG.debug(f"{self.toolbox_id}: could not write policy scaffold: {e}")
+
     def _make_tool_call(self, server: MCPServerConfig, remote_name: str):
         """Returns a closure matching the ToolCallFunc contract:
         accepts one instantiated ToolArguments, returns a ToolOutput.
         """
         def _call(args: ToolArguments) -> MCPToolCallOutput:
+            # Fail-closed confirmation gate - see class docstring. No
+            # pause-and-ask mechanism exists yet, so a call requiring
+            # confirmation is refused, never silently run or silently
+            # skipped past.
+            if self._policy.requires_confirmation(server.name, remote_name):
+                return MCPToolCallOutput(
+                    result=(
+                        f"Refused: '{remote_name}' on server '{server.name}' "
+                        "requires confirmation, and no confirmation mechanism "
+                        "is implemented yet. Add it to this server's "
+                        "'never confirm' list in settings if you've verified "
+                        "it's safe to auto-run, or wait for the confirmation "
+                        "flow to be built."
+                    ),
+                    server=server.name, tool=remote_name, is_error=True,
+                )
+
             client = self._clients[server.name]
             # Drop unset optional fields rather than sending explicit
             # nulls - some remote schemas may not expect a null for an

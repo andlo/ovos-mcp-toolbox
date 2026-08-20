@@ -1,17 +1,23 @@
 # ovos-mcp-toolbox
 
 > ⚠️ **WORK IN PROGRESS — NOT PUBLISHED, NOT SAFE FOR REAL SIDE-EFFECT TOOLS.**
-> As of 2026-08-20, the **full chain works end-to-end, including side-effect
-> tools**: a real LLM (via a public demo Ollama) reasons about a question,
-> correctly disambiguates between two similarly-named entities, calls
-> `HassTurnOn`/`HassTurnOff` through `MCPToolBox` against real Home
-> Assistant, and the resulting state change was independently verified —
-> see [TESTING_LOG.md](TESTING_LOG.md). Testing used two harmless virtual
-> `input_boolean` helpers created specifically so a wrong tool choice would
-> have zero real consequence. There is still **no confirmation gate**: the
-> same mechanism pointed at a real lock or appliance would execute
-> immediately, with no confirmation step. Building that gate is the next
-> priority, not further capability testing.
+> As of 2026-08-20, the full chain works end-to-end including a real
+> confirmation gate: a real LLM (via a public demo Ollama) reasons about
+> a question, correctly disambiguates between two similarly-named
+> entities, and calls tools through `MCPToolBox` against real Home
+> Assistant — with a per-server, per-tool-name policy fail-closed
+> refusing any call not explicitly allowed. See
+> [TESTING_LOG.md](TESTING_LOG.md) for the full trail, including a
+> topology mistake found and reversed mid-build (an earlier version
+> shared policy via OVOS skill settings, which silently assumed the
+> toolbox and a skill share a filesystem — broken for a standalone
+> `ovos-persona-server` on a different host; policy now lives in this
+> toolbox's own config instead, like the rest of the
+> `ovos-agentic-loop` ecosystem already does). There is still **no
+> pause-and-ask mechanism** — a call the policy flags is refused
+> outright, not paused for a human answer, since `ReActLoopEngine` has
+> no built-in way to pause mid-loop yet. Building that is the next
+> priority.
 
 ## The idea
 
@@ -74,11 +80,12 @@ that's a fine outcome.
       validated `ToolOutput`. Verified through the *full* `ToolBox.call_tool()`
       path (input validation → execution → output validation), not just
       the bare HTTP call.
-- [ ] Confirmation gate for tools with side-effects — **not implemented,
-      the main safety gap right now. Side-effect tools (HassTurnOn/Off)
-      have now been proven to work correctly (2026-08-20, against safe
-      virtual test helpers) - the risk is real, not hypothetical, the
-      moment this points at anything that matters.**
+- [x] Confirmation gate for tools with side-effects — **classification +
+      fail-closed enforcement DONE 2026-08-20**, verified live: HassTurnOn
+      correctly refused (not in never_confirm), GetDateTime correctly
+      allowed (in never_confirm), state independently confirmed unchanged
+      after a refused call. Still missing the actual pause-and-ask
+      mechanism - see warning banner.
 - [x] Graceful degradation when a configured server is unreachable —
       implemented (`LOG.warning` + skip), not yet tested against an
       actually-offline server (only tested against one that was always up)
@@ -147,7 +154,7 @@ class MyToolBox(ToolBox):
 `ToolBox.__init__` takes `(toolbox_id, config=None, bus=None)`. Entry
 point group is `opm.agents.toolbox`.
 
-## Config shape (draft, unverified)
+## Config shape
 
 ```json
 {
@@ -155,8 +162,8 @@ point group is `opm.agents.toolbox`.
     "servers": [
       {
         "name": "ha",
-        "transport": "sse",
-        "url": "http://192.168.65.43:8123/mcp_server/sse",
+        "transport": "http",
+        "url": "http://192.168.65.186/api/mcp",
         "token": "..."
       },
       {
@@ -165,10 +172,71 @@ point group is `opm.agents.toolbox`.
         "command": "npx",
         "args": ["-y", "@wonderwhy-er/desktop-commander"]
       }
-    ]
+    ],
+    "policy": {
+      "ha__default_confirm": true,
+      "ha__always_confirm": "HassBroadcast",
+      "ha__never_confirm": "GetDateTime,GetLiveContext"
+    },
+    "scaffold_path": "/home/andlo/.local/state/ovos-mcp-toolbox/policy_scaffold.json"
   }
 }
 ```
+
+`transport: "stdio"` is accepted but not implemented yet - see status
+table.
+
+## Confirmation policy
+
+See [policy.py](ovos_mcp_toolbox/policy.py)'s module docstring for the
+full design writeup - short version here.
+
+**Server-agnostic, tool-name-based.** The only thing every MCP server's
+`tools/list` reliably gives us is a flat list of tool name strings -
+no shared ontology across servers (Home Assistant has "domains", a
+filesystem MCP server doesn't). MCP's own `annotations`
+(`readOnlyHint`/`destructiveHint`) would have been the proper signal,
+but HA doesn't send them (checked live, see TESTING_LOG.md) - so
+policy is just per-server, per-tool-name:
+
+- `{server}__default_confirm` (bool, default `true` - unknown tool = confirm)
+- `{server}__always_confirm` (comma-separated tool names)
+- `{server}__never_confirm` (comma-separated tool names)
+
+**Lives in this toolbox's own config, not OVOS skill settings.** An
+earlier version stored policy in a companion OVOSSkill's
+`settings.json`, shared with `MCPToolBox` by both reading the same
+file on disk. That silently assumed the toolbox and ovos-core's skill
+manager run on the same host with a shared filesystem - true if the
+persona runs inside `ovos-core` itself, false for a standalone
+`ovos-persona-server` on a different machine. Reversed in favour of
+plain config, matching how `ShellToolBox`'s `allow_shell` and
+`FileSystemToolBox`'s `allow_write` already work in
+`ovos-agentic-loop` itself - no new infrastructure, works regardless
+of where the toolbox actually runs.
+
+**How a user knows what to write.** You can't write a sensible
+`never_confirm` list without first seeing what tool names a server
+exposes. Two ways to get that:
+
+1. Standalone CLI, before you've even added the server to persona.json:
+   ```
+   python -m ovos_mcp_toolbox.policy_scaffold \
+       --name ha --url http://192.168.65.186/api/mcp --token <token>
+   ```
+2. Set `"scaffold_path"` in the toolbox's own config (opt-in, `None`/absent
+   by default - never guesses a directory on your behalf) and
+   `MCPToolBox` writes/updates a reference file there every time
+   `discover_tools()` runs successfully, one section per server,
+   merging rather than overwriting (a temporarily-offline server keeps
+   its last-known entry). Never touches persona.json itself.
+
+**Enforcement is fail-closed, not fail-silent.** `_make_tool_call`'s
+closure checks the policy before every call. If confirmation is
+required, the call is refused with a clear message back to the
+LLM/loop - it is never silently executed and never silently skipped.
+There is no pause-and-ask mechanism yet (see warning banner at top);
+this is the interim safe default, not the finished feature.
 
 ## Not yet decided
 
