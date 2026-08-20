@@ -419,3 +419,93 @@ it - worth remembering: "does this work" and "does this work for every
 topology this is supposed to support" are different questions, and
 this project's own test suite (all run on one machine, one process)
 couldn't have caught the skill-settings mistake on its own.
+
+
+## Connected to Andreas's real home HA (192.168.65.200), first real-world action (2026-08-20)
+
+Distinct from the test instance (.186): confirmed via `/api/config`
+before touching anything - `version: 2026.8.2` matches the `ha-mcp`
+Claude-side connector's earlier overview exactly, `location_name:
+"Hjem"`, and the component list includes real integrations (zwave_js,
+shelly, xiaomi_miot, esphome, smartthings, mqtt, spotify, braviatv,
+music_assistant, anthropic, ...) - genuinely the production home
+instance, not another test box. Runs on port 8123 directly (unlike
+.186's port 80), `mcp_server` component confirmed present (official
+integration already added).
+
+### Discovery: 19 tools vs 10 on the test instance
+
+`tools/list` returned 19 tools here vs 10 on `.186`: additionally
+`calendar_get_events`, `HassClimateSetTemperature`, `HassLightSet`
+(dedicated brightness/color control, not just on/off),
+`HassMediaUnpause/Pause/Next/Previous`, `HassSetVolume(Relative)`,
+`HassMediaPlayerMute/Unmute`, `HassMediaSearchAndPlay`, and one
+clearly custom user script (`sla_en_prut`, not touched or explored -
+personal automation, out of scope). More tools appear as more
+integrations/domains are exposed to Assist - unsurprising but good to
+have confirmed against two real, differently-configured instances
+rather than assuming from one.
+
+### Read-only discovery first, gated correctly
+
+Set `policy: {"home__default_confirm": true}` with no overrides -
+`GetLiveContext` was correctly REFUSED (fail-closed applies to
+read-only tools too until explicitly allowed, exactly as designed).
+Added `GetDateTime,GetLiveContext,calendar_get_events` to
+`never_confirm`, re-ran - `GetLiveContext` succeeded and returned the
+full light inventory with Danish voice aliases:
+
+```
+names: bordlamper, bordslamper, lys ved bordet, spisebordslamper, vindueslamper
+domain: light
+state: 'on'
+areas: Upstairs, arbejdsplads, arbejdsrum, kontor, ovenpå, stue
+brightness: '255'
+```
+
+Confirmed this resolves to `light.table_lamps` (English entity name,
+friendly_name "Table lamps") by cross-checking `/api/states` directly
+- state and brightness matched exactly. Andreas confirmed by direct
+question this was the right lamp, not assumed.
+
+### First real-world side-effect action, explicitly authorised
+
+Andreas explicitly asked to test turning the table lamps off and back
+on as a visible real test, after being asked directly whether to
+temporarily allow it. Added `HassTurnOn,HassTurnOff` to
+`never_confirm` for this one supervised test - not a permanent policy
+change, and Andreas was asked and answered before it happened, not
+assumed.
+
+```
+Before: GET /api/states/light.table_lamps -> state: on, brightness: 255
+
+tb.call_tool("home_hassturnoff", {"name": "bordlamper"})
+  -> {"data": {"success": [{"name": "Table lamps", "type": "entity",
+                             "id": "light.table_lamps"}], "failed": []}}
+Verified independently: GET /api/states/light.table_lamps -> state: off
+
+tb.call_tool("home_hassturnon", {"name": "bordlamper"})
+  -> {"data": {"success": [{"name": "Table lamps", ...}], "failed": []}}
+Verified independently: GET /api/states/light.table_lamps -> state: on, brightness: 255
+```
+
+House left in the exact state it was found in (on, brightness 255) -
+not just "tool reported success", verified against HA's own state API
+before and after both calls, same discipline as every other live test
+in this log.
+
+### What this confirms
+
+- Danish voice-assistant aliases ("bordlamper") resolve correctly
+  through HA's own Assist name-matching to the right English-named
+  entity (`light.table_lamps`) - MCPToolBox never had to know or guess
+  this mapping, HA did it.
+- The fail-closed gate behaves identically on a real, much larger,
+  differently-configured instance as it did on the test instance -
+  not something only working by coincidence against .186's specific
+  10-tool catalog.
+- This is the first time this project has changed the state of a real
+  physical device in Andreas's home, done deliberately, with explicit
+  prior confirmation, and independently verified undone/restored
+  afterward - not left as an open-ended capability.
