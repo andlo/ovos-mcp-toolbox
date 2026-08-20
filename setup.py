@@ -18,7 +18,7 @@ setup(
     install_requires=[
         "ovos-plugin-manager",
         "ovos-agentic-loop",
-        "mcp",
+        "requests",
     ],
     entry_points={
         "opm.agents.toolbox": [

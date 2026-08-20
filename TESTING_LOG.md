@@ -32,6 +32,39 @@ Written here instead of guessed at, so the README's status section stays honest.
 
 ## Home Assistant (192.168.65.186)
 
+**UPDATE 2026-08-20, later same day**: The official MCP Server
+integration has now been added. Full round-trip tested manually with
+`curl` + a long-lived access token (token itself NOT stored in this
+repo or logged anywhere here):
+
+- `initialize` → `200 OK`, `serverInfo: {"name": "home-assistant",
+  "version": "1.26.0"}`, protocol `2024-11-05`.
+- `tools/list` → **10 real tools** returned: `HassBroadcast`,
+  `GetLiveContext`, `HassTurnOn`, `HassTurnOff`, `HassCancelAllTimers`,
+  `GetDateTime`, `todo_get_items`, `HassListAddItem`,
+  `HassListCompleteItem`, `HassListRemoveItem`.
+- `tools/call` on `GetDateTime` (read-only, no args) → `200 OK`,
+  `{"content": [{"type": "text", "text": "{...}"}], "isError": false}`
+  — confirms the response shape `MCPToolBox._call_remote_tool()` in
+  the skeleton already assumes (`block.text` per content item) is
+  correct.
+- Auth: two gotchas found by trial, worth remembering — (1) requires
+  `Accept: application/json, text/event-stream`, not just
+  `application/json`, or HA returns `400 Client must accept
+  application/json`; (2) requires `Authorization: Bearer <long-lived
+  token>`, standard OAuth-style 401 challenge otherwise.
+- **Schema complexity note**: `HassTurnOn`'s schema uses a plain
+  `properties` object (matches the skeleton's `_schema_to_pydantic`),
+  but `GetLiveContext`'s `domain` field uses `anyOf: [string, array]` —
+  the skeleton's naive JSON-schema-to-pydantic mapper does **not**
+  handle `anyOf` yet. Needs fixing before real use.
+- **Confirmation-gate relevance confirmed for real**: `HassTurnOn`'s
+  own description states it performs a lock action for locks — exactly
+  the kind of tool that must sit behind a confirmation gate, not
+  hypothetical.
+
+Old findings below, from before the integration existed:
+
 - Reachable on port 80 directly (not proxied) — confirmed genuine HA
   instance via `/manifest.json` and frontend HTML.
 - Standard MCP Server integration paths all 404:

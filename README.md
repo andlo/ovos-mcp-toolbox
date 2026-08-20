@@ -1,11 +1,16 @@
 # ovos-mcp-toolbox
 
-> ⚠️ **WORK IN PROGRESS — NOT FUNCTIONAL, NOT TESTED, NOT PUBLISHED.**
-> This repo exists to explore an idea. Nothing here has run against a real
-> MCP server yet. Expect it to be broken, incomplete, or abandoned. Do not
-> install this on a live OVOS instance. Do not point it at anything with
-> real side-effects (smart locks, financial tools, etc.) until there is a
-> working confirmation-gate and it has been tested extensively.
+> ⚠️ **WORK IN PROGRESS — NOT PUBLISHED, NOT SAFE FOR SIDE-EFFECT TOOLS.**
+> As of 2026-08-20, `discover_tools()` and tool execution over the MCP
+> Streamable HTTP transport are implemented and hand-verified end-to-end
+> against a real Home Assistant MCP endpoint — see
+> [TESTING_LOG.md](TESTING_LOG.md). There is still **no confirmation gate**:
+> every discovered tool, including side-effect ones like `HassTurnOn`
+> (which can unlock doors), is callable immediately. This has only been run
+> by calling `discover_tools()`/`call_tool()` directly in a script — never
+> through an actual `ovos-agentic-loop` `ReActLoopEngine` with a real LLM
+> making the tool-choice decisions. Do not point this at anything with real
+> side-effects in an unsupervised loop yet.
 
 ## The idea
 
@@ -58,31 +63,39 @@ that's a fine outcome.
 - [x] Verified `ToolBox` / `AgentTool` interface against installed
       `ovos-plugin-manager` source (`templates/agent_tools.py`) and the
       real `ovos-wolfram-alpha-plugin` implementation as reference.
-- [ ] `MCPToolBox.discover_tools()` — connects to configured MCP servers,
-      maps `tools/list` response to `AgentTool` instances
-- [ ] `MCPToolBox.<handler>` — calls the remote tool via MCP, returns
-      validated `ToolOutput`
-- [ ] Confirmation gate for tools with side-effects
-- [ ] Graceful degradation when a configured server is unreachable
-- [ ] Tested against a live MCP server (ha-mcp) — **blocked, see below**
+- [x] `MCPToolBox.discover_tools()` — connects to configured MCP servers
+      over HTTP transport, maps `tools/list` to `AgentTool` instances.
+      Verified against live HA: all 10 real tools discovered, JSON-schema
+      → pydantic conversion handles both plain `properties` and `anyOf`
+      fields correctly (the `anyOf` case needed a real bugfix — see
+      TESTING_LOG.md).
+- [x] Tool execution — calls the remote tool via MCP `tools/call`, returns
+      validated `ToolOutput`. Verified through the *full* `ToolBox.call_tool()`
+      path (input validation → execution → output validation), not just
+      the bare HTTP call.
+- [ ] Confirmation gate for tools with side-effects — **not implemented,
+      the main safety gap right now**
+- [x] Graceful degradation when a configured server is unreachable —
+      implemented (`LOG.warning` + skip), not yet tested against an
+      actually-offline server (only tested against one that was always up)
+- [ ] stdio transport — **not implemented**, only HTTP so far
+- [x] Tested against a live MCP server (Home Assistant, 192.168.65.186) —
+      see [TESTING_LOG.md](TESTING_LOG.md) for exact requests/responses
 - [ ] Tested against a second MCP server simultaneously — **not done**
+- [ ] Run inside an actual `ovos-agentic-loop` `ReActLoopEngine` with a
+      real LLM `brain` — **not done**, only called directly in scripts.
+      No LLM backend (Ollama etc.) is running on the test network yet.
 - [ ] Packaged/published — **not done, do not `pip install` from PyPI,
       it isn't there**
 
-**Blocked on infrastructure, not on this repo's code** — see
-[TESTING_LOG.md](TESTING_LOG.md) for full details:
-
-1. The entire `ToolBox`/`AgentTool` interface this project depends on
-   only exists in **alpha** builds of `ovos-plugin-manager`
-   (`>=2.2.1a2`; latest stable is `2.2.0`). Even `ovos-agentic-loop`'s
-   PyPI-stable `0.1.0` release requires an alpha `ovos-plugin-manager`.
-   Nothing stable to build against yet.
-2. Home Assistant's MCP Server integration doesn't answer on any
-   standard path on the available test instance (192.168.65.186) —
-   unclear yet whether it's installed/enabled at all.
-3. No LLM backend (Ollama or otherwise) is running anywhere on the test
-   network yet, so there's nothing to wire up as the loop's `brain`
-   even once the above are sorted.
+**Still blocked on one piece of infrastructure**, unrelated to whether
+the code works: the entire `ToolBox`/`AgentTool` interface this project
+depends on only exists in **alpha** builds of `ovos-plugin-manager`
+(`>=2.2.1a2`; latest stable is `2.2.0`). Even `ovos-agentic-loop`'s
+PyPI-stable `0.1.0` release requires an alpha `ovos-plugin-manager`. That
+means running this for real on the OVOS test instance (currently on
+stable `2.2.0`) means opting it into alpha dependencies first — a decision
+for Andreas, not made yet.
 
 ## Verified interface (for reference while building)
 
