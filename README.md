@@ -1,16 +1,18 @@
 # ovos-mcp-toolbox
 
 > ⚠️ **WORK IN PROGRESS — NOT PUBLISHED, NOT SAFE FOR SIDE-EFFECT TOOLS.**
-> As of 2026-08-20, `discover_tools()` and tool execution over the MCP
-> Streamable HTTP transport are implemented and hand-verified end-to-end
-> against a real Home Assistant MCP endpoint — see
-> [TESTING_LOG.md](TESTING_LOG.md). There is still **no confirmation gate**:
-> every discovered tool, including side-effect ones like `HassTurnOn`
-> (which can unlock doors), is callable immediately. This has only been run
-> by calling `discover_tools()`/`call_tool()` directly in a script — never
-> through an actual `ovos-agentic-loop` `ReActLoopEngine` with a real LLM
-> making the tool-choice decisions. Do not point this at anything with real
-> side-effects in an unsupervised loop yet.
+> As of 2026-08-20, the **full chain works end-to-end**: a real LLM (via a
+> public demo Ollama) reasons about a question, chooses the right tool
+> through `MCPToolBox`, calls real Home Assistant over MCP, and returns a
+> correct natural-language answer from live data — see
+> [TESTING_LOG.md](TESTING_LOG.md) for the transcript and the two real bugs
+> (one in `ovos-agentic-loop`, one a silent-strip config gotcha in
+> `ovos-openai-plugin`) found and worked around to get there. There is
+> still **no confirmation gate**: every discovered tool, including
+> side-effect ones like `HassTurnOn` (which can unlock doors), is callable
+> immediately, and this has only been tested with a single read-only,
+> no-argument tool. Do not point this at anything with real side-effects
+> in an unsupervised loop yet.
 
 ## The idea
 
@@ -82,9 +84,12 @@ that's a fine outcome.
 - [x] Tested against a live MCP server (Home Assistant, 192.168.65.186) —
       see [TESTING_LOG.md](TESTING_LOG.md) for exact requests/responses
 - [ ] Tested against a second MCP server simultaneously — **not done**
-- [ ] Run inside an actual `ovos-agentic-loop` `ReActLoopEngine` with a
-      real LLM `brain` — **not done**, only called directly in scripts.
-      No LLM backend (Ollama etc.) is running on the test network yet.
+- [x] Run inside an actual `ovos-agentic-loop` `ReActLoopEngine` with a
+      real LLM `brain` — **DONE 2026-08-20**, using the public demo
+      Ollama (`https://ollama.uoi.io/v1`, `qwen3:8b`) as brain. Full
+      question → tool choice → MCP call → live HA data → natural-language
+      answer, verified correct against wall-clock time. Two real bugs
+      found and worked around along the way — see TESTING_LOG.md.
 - [ ] Packaged/published — **not done, do not `pip install` from PyPI,
       it isn't there**
 

@@ -100,3 +100,130 @@ Neither of those is a problem with this repo's code — they're
 prerequisites that need sorting out (enable/find the HA MCP endpoint,
 decide whether the OVOS test instance should run alpha deps) before a
 real end-to-end test is possible.
+
+
+## Full end-to-end test: LLM brain + MCPToolBox + live HA (2026-08-20)
+
+**First time the complete chain has worked**: a real LLM (via the public
+demo Ollama, `qwen3:8b`) reasoned about a question, chose the correct
+tool through `MCPToolBox`, called real Home Assistant over MCP, and
+produced a correct natural-language answer from live data.
+
+```
+User: "What is the current date and time?"
+Assistant: "The current date and time are August 20, 2026, at 19:28:25
+(CEST). This corresponds to Thursday in the Central European Summer
+Time zone."
+```
+
+Verified correct by comparing to wall-clock time at the moment of the
+call - this is real data round-tripped through HA, not a hallucination.
+
+### Two real bugs found and fixed to get here (not hypothetical, found by running the code)
+
+**Bug 1 — `ReActLoopEngine._load_brain()` incompatible with installed `ovos-plugin-manager`.**
+`ovos-agentic-loop==0.2.3a1`'s `_load_brain()` calls:
+```python
+load_chat_plugin(brain_id, config=self.config.get(brain_id, {}))
+```
+but the installed `ovos-plugin-manager==2.11.1a2`'s `load_chat_plugin()`
+signature is `(module_name: str) -> Type[ChatEngine]` — it takes no
+`config` arg and returns an *uninstantiated class*, not an instance.
+Result: passing `"brain": "ovos-chat-openai-plugin"` in `ReActLoopEngine`
+config always fails silently (caught by a bare `except Exception`,
+logged as a `LOG.warning`, engine ends up with no brain at all).
+
+This is a genuine version-skew bug between two alpha packages that are
+both currently the latest on PyPI — not something fixable in this repo.
+**Workaround**: instantiate the `ChatEngine` yourself and inject it via
+the engine's `set_brain()` method instead of the `"brain"` config key:
+```python
+brain = OpenAIChatEngine(config={...})
+engine = ReActLoopEngine({"max_iterations": 6})
+engine.set_brain(brain)
+```
+
+**Bug 2 (config gotcha, not a code bug) — `allow_system_prompts` defaults to `False`.**
+`OpenAIChatEngine.__init__` sets
+`self.allow_system = self.config.get("allow_system_prompts") or False`.
+`ReActLoopEngine`'s entire ReAct mechanism depends on injecting a
+system message containing the tool schemas and instructions
+(`_build_react_system`). With the default `allow_system=False`,
+`validate_messages()` **silently strips every system message** before
+the request is sent — the LLM never sees the tool list or ReAct
+instructions at all, and just answers as a plain chatbot. No error,
+no warning — the loop "worked" but the LLM was blind to every tool.
+
+Diagnosed by: comparing a raw `curl` call with the exact same
+15KB system prompt (which got a correct `Thought:/Action:` response)
+against the same call through `OpenAIChatEngine.continue_chat()`
+(which didn't) — then reading `validate_messages()`'s source to find
+the silent strip.
+
+**Fix**: explicitly set `"allow_system_prompts": true` in the brain's
+config. Without this, `ovos-agentic-loop`'s ReAct pattern cannot work
+with `ovos-chat-openai-plugin` at all, and there's nothing in the docs
+of either package (as of 2026-08-20) that flags this interaction.
+
+### Also confirmed working correctly (not a bug)
+
+- `OpenAIChatEngine`'s `api_url` config must be the base URL (e.g.
+  `https://ollama.uoi.io/v1`), not the full completions path — the
+  plugin appends `/chat/completions` itself. Passing the full path
+  produces a 404 on a doubled path.
+- The public demo endpoints (`https://ollama.uoi.io/v1`,
+  `https://llama.smartgic.io/v1` — both referenced as example URLs in
+  OVOS's own package READMEs) were both reachable and responsive at
+  test time, serving identical model lists (likely same backend).
+  `qwen3:8b` reliably produces correctly-formatted ReAct output
+  (`Thought:`/`Action:`/`Action Input:`) once it actually receives the
+  system prompt.
+
+### Full working example (isolated venv, NOT run on the live OVOS instance)
+
+```python
+from ovos_agentic_loop.react import ReActLoopEngine
+from ovos_plugin_manager.templates.agents import AgentMessage, MessageRole
+from ovos_openai_plugin.chat import OpenAIChatEngine
+from ovos_mcp_toolbox import MCPToolBox
+
+brain = OpenAIChatEngine(config={
+    "api_url": "https://ollama.uoi.io/v1",
+    "model": "qwen3:8b",
+    "allow_system_prompts": True,  # required, see Bug 2 above
+})
+
+engine = ReActLoopEngine({"max_iterations": 6})
+engine.set_brain(brain)  # required, see Bug 1 above - "brain" config key doesn't work
+
+toolbox = MCPToolBox(config={"servers": [
+    {"name": "ha", "transport": "http",
+     "url": "http://192.168.65.186/api/mcp", "token": "<long-lived token>"}
+]})
+engine.load_toolboxes([toolbox])
+
+response = engine.continue_chat([
+    AgentMessage(role=MessageRole.USER, content="What is the current date and time?")
+])
+print(response.content)
+```
+
+Run entirely from an isolated venv (`/tmp/mcp_probe`), not the live
+OVOS instance's pinned venv on `.43` - the alpha-dependency decision
+for the production instance is still open, unaffected by this test.
+
+### Still not tested / known gaps after this milestone
+
+- Only tested with a read-only, no-argument tool (`GetDateTime`).
+  Have NOT tested a full loop run that picks a side-effect tool like
+  `HassTurnOn` - there is still no confirmation gate, so this is a real
+  risk, not a hypothetical one, the moment a persona is pointed at
+  entities that matter.
+- Only one demo Ollama call cycle tested; model behaviour with a public,
+  shared, unthrottled demo server under repeated/concurrent use is
+  unknown — no rate limits observed, but not stress-tested either.
+- `qwen3:8b`'s ReAct-format reliability was observed over a handful of
+  calls, not systematically. Small/cheaper models may follow the
+  format less reliably; not tested.
+- Multi-tool reasoning (a question requiring 2+ sequential tool calls)
+  not tested — only single-tool-call happy path so far.
