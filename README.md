@@ -1,5 +1,24 @@
 # ovos-mcp-toolbox
 
+> 🟡 **SUPERSEDED — an official, more complete version of this exists:**
+> [OpenVoiceOS/ovos-tool-adapters](https://github.com/OpenVoiceOS/ovos-tool-adapters)
+> (also NLnet-funded, same author as `ovos-agentic-loop`). It bridges
+> both MCP *and* UTCP into `ovos-agentic-loop`, and covers all three MCP
+> transports (`stdio`, `SSE`, `Streamable HTTP`) - this repo only ever
+> got `http` working. Found it 2026-08-20 after posting about this repo
+> in OVOS Development; the maintainer (JarbasAI) pointed it out. No
+> reason to keep developing the bridging mechanism here - **use
+> `ovos-tool-adapters` instead.**
+>
+> What this repo *might* still add: a confirmation/safety policy for
+> side-effect tools (`policy.py` below) - `ovos-tool-adapters`' README
+> doesn't mention one as of this writing. Plan: fork `ovos-tool-adapters`,
+> port the policy design over there, test it properly, and open a PR if
+> it holds up - rather than maintaining a parallel bridge. This repo will
+> be archived once that happens.
+
+> ⚠️ **Everything below describes the state of THIS repo before the above was known.**
+
 > ⚠️ **WORK IN PROGRESS — NOT PUBLISHED, NOT SAFE FOR REAL SIDE-EFFECT TOOLS.**
 > As of 2026-08-20, the full chain works end-to-end including a real
 > confirmation gate: a real LLM (via a public demo Ollama) reasons about
